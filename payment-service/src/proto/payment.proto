@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package payment;
+
+// ============================================================
+// Payment Service — gRPC contract
+// Consumed by any internal microservice that needs to initialize,
+// verify, query, or refund a Paystack payment without talking to
+// Paystack directly.
+// ============================================================
+
+service PaymentService {
+  rpc InitializePayment(InitializePaymentRequest) returns (InitializePaymentResponse);
+  rpc VerifyPayment(VerifyPaymentRequest) returns (VerifyPaymentResponse);
+  rpc GetPaymentStatus(GetPaymentStatusRequest) returns (GetPaymentStatusResponse);
+  rpc RefundPayment(RefundPaymentRequest) returns (RefundPaymentResponse);
+}
+
+// ---- Shared ----
+
+enum PaymentStatus {
+  PAYMENT_STATUS_UNSPECIFIED = 0;
+  PENDING = 1;
+  INITIALIZED = 2;
+  SUCCESSFUL = 3;
+  FAILED = 4;
+  ABANDONED = 5;
+  REFUNDED = 6;
+  PARTIALLY_REFUNDED = 7;
+}
+
+message Metadata {
+  map<string, string> fields = 1;
+}
+
+// ---- InitializePayment ----
+
+message InitializePaymentRequest {
+  // Amount in the smallest currency unit (e.g. kobo for NGN, cents for USD)
+  int64 amount = 1;
+  string email = 2;
+  string currency = 3; // e.g. NGN, GHS, ZAR, USD
+  Metadata metadata = 4;
+  string callback_url = 5;
+  // Client-supplied idempotency key. Same key -> same result, no duplicate charge.
+  string idempotency_key = 6;
+  // Optional caller-supplied reference; service generates one if omitted.
+  string reference = 7;
+  repeated string channels = 8; // e.g. ["card", "bank_transfer"]
+}
+
+message InitializePaymentResponse {
+  bool success = 1;
+  string reference = 2;
+  string authorization_url = 3;
+  string access_code = 4;
+  PaymentStatus status = 5;
+  string message = 6;
+}
+
+// ---- VerifyPayment ----
+
+message VerifyPaymentRequest {
+  string reference = 1;
+}
+
+message VerifyPaymentResponse {
+  bool success = 1;
+  string reference = 2;
+  PaymentStatus status = 3;
+  int64 amount = 4;
+  string currency = 5;
+  string channel = 6;
+  string gateway_response = 7;
+  string paid_at = 8; // ISO-8601
+  Metadata metadata = 9;
+  string message = 10;
+}
+
+// ---- GetPaymentStatus ----
+
+message GetPaymentStatusRequest {
+  string reference = 1;
+}
+
+message GetPaymentStatusResponse {
+  bool success = 1;
+  string reference = 2;
+  PaymentStatus status = 3;
+  int64 amount = 4;
+  string currency = 5;
+  string email = 6;
+  string created_at = 7; // ISO-8601
+  string updated_at = 8; // ISO-8601
+  string message = 9;
+}
+
+// ---- RefundPayment ----
+
+message RefundPaymentRequest {
+  string reference = 1;
+  // Optional partial refund amount (smallest currency unit). 0/absent = full refund.
+  int64 amount = 2;
+  string reason = 3;
+  string idempotency_key = 4;
+}
+
+message RefundPaymentResponse {
+  bool success = 1;
+  string refund_reference = 2;
+  string original_reference = 3;
+  PaymentStatus status = 4;
+  string message = 5;
+}

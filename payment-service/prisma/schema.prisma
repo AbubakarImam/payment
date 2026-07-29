@@ -1,0 +1,87 @@
+// Prisma schema for the Paystack payment microservice.
+// Only minimal, non-sensitive payment metadata is persisted here.
+// Full card/PAN data is NEVER received or stored — Paystack handles
+// card capture entirely on its hosted checkout / client-side SDK.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PaymentStatus {
+  PENDING
+  INITIALIZED
+  SUCCESSFUL
+  FAILED
+  ABANDONED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Payment {
+  id                String        @id @default(uuid())
+  reference         String        @unique
+  paystackAccessCode String?
+  email             String
+  amount            Int // amount in the smallest currency unit (kobo/cents)
+  currency          String        @default("NGN")
+  status            PaymentStatus @default(PENDING)
+  channel           String?
+  gatewayResponse   String?
+  paidAt            DateTime?
+  metadata          Json?
+  idempotencyKey    String?       @unique
+  callbackUrl       String?
+  ipAddress         String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  refunds Refund[]
+
+  @@index([email])
+  @@index([status])
+}
+
+enum RefundStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
+
+model Refund {
+  id            String       @id @default(uuid())
+  paymentId     String
+  payment       Payment      @relation(fields: [paymentId], references: [id])
+  reference     String       @unique
+  amount        Int?
+  status        RefundStatus @default(PENDING)
+  reason        String?
+  paystackRefundId String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([paymentId])
+}
+
+// Tracks processed Paystack webhook event IDs to guarantee idempotent
+// event handling even if Paystack retries delivery.
+model WebhookEvent {
+  id         String   @id @default(uuid())
+  eventId    String   @unique // hash of payload used as dedup key
+  eventType  String
+  reference  String?
+  processedAt DateTime @default(now())
+}
+
+// Tracks idempotency keys supplied by callers of InitializePayment so
+// repeated gRPC calls with the same key return the original result.
+model IdempotencyRecord {
+  id           String   @id @default(uuid())
+  key          String   @unique
+  responseJson Json
+  createdAt    DateTime @default(now())
+}
