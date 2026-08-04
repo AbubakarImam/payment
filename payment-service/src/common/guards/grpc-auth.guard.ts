@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { RpcException } from '@nestjs/microservices';
 import { status as GrpcStatus } from '@grpc/grpc-js';
 import { constantTimeEquals } from '../utils/crypto.util';
+import { MetricsService } from '../../observability/metrics.service';
 
 /**
  * Minimal shared-secret authentication for inter-service gRPC calls.
@@ -17,7 +18,10 @@ import { constantTimeEquals } from '../utils/crypto.util';
 export class GrpcAuthGuard implements CanActivate {
   private readonly logger = new Logger(GrpcAuthGuard.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly metrics: MetricsService,
+  ) {}
 
   canActivate(context: ExecutionContext): boolean {
     const rpcContext = context.switchToRpc();
@@ -27,6 +31,7 @@ export class GrpcAuthGuard implements CanActivate {
     if (!expectedSecret) {
       // Fail closed: never allow unauthenticated gRPC calls.
       this.logger.error('GRPC_SHARED_SECRET is not configured — rejecting call');
+      this.metrics.recordGrpcAuthFailure();
       throw new RpcException({ code: GrpcStatus.UNAUTHENTICATED, message: 'Server misconfigured' });
     }
 
@@ -34,6 +39,7 @@ export class GrpcAuthGuard implements CanActivate {
     const provided = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
 
     if (!provided || !constantTimeEquals(provided, expectedSecret)) {
+      this.metrics.recordGrpcAuthFailure();
       throw new RpcException({ code: GrpcStatus.UNAUTHENTICATED, message: 'Invalid credentials' });
     }
 

@@ -1,8 +1,20 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
+
+/**
+ * Prisma's log-event typings depend on the exact `log` config passed to the
+ * constructor — declaring the emitted levels as a type parameter here (
+ * instead of leaving them to be inferred, or suppressing the mismatch with
+ * `@ts-expect-error`) is what gives `$on('error', ...)` a properly typed
+ * `Prisma.LogEvent` callback below.
+ */
+type PrismaLogEvent = 'query' | 'error' | 'warn';
 
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+export class PrismaService
+  extends PrismaClient<Prisma.PrismaClientOptions, PrismaLogEvent>
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(PrismaService.name);
 
   constructor() {
@@ -14,16 +26,15 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     });
   }
 
-  async onModuleInit() {
-    // @ts-expect-error - prisma event typing requires the log config above
-    this.$on('error', (e: unknown) => this.logger.error(e));
-    // @ts-expect-error - prisma event typing requires the log config above
-    this.$on('warn', (e: unknown) => this.logger.warn(e));
+  async onModuleInit(): Promise<void> {
+    this.$on('error', (event: Prisma.LogEvent) => this.logger.error(event.message));
+    this.$on('warn', (event: Prisma.LogEvent) => this.logger.warn(event.message));
+
     await this.$connect();
     this.logger.log('Connected to database');
   }
 
-  async onModuleDestroy() {
+  async onModuleDestroy(): Promise<void> {
     await this.$disconnect();
   }
 }

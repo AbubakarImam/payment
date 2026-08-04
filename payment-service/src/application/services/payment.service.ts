@@ -5,7 +5,10 @@ import {
 } from '../../domain/interfaces/payment-repository.interface';
 import {
   IPaymentGateway,
+  InitializeTransactionResult,
   PAYMENT_GATEWAY,
+  RefundTransactionResult,
+  VerifyTransactionResult,
 } from '../../domain/interfaces/payment-gateway.interface';
 import {
   EVENT_PUBLISHER,
@@ -14,6 +17,7 @@ import {
 import { PaymentEventName } from '../../domain/enums/payment-event.enum';
 import { PaymentStatus } from '../../domain/enums/payment-status.enum';
 import { PaymentEntity } from '../../domain/entities/payment.entity';
+import { RefundStatus } from '../../domain/entities/refund.entity';
 import { InitializePaymentDto } from '../dto/initialize-payment.dto';
 import { RefundPaymentDto } from '../dto/refund-payment.dto';
 import { generatePaymentReference, generateRefundReference } from '../../common/utils/reference.util';
@@ -23,6 +27,8 @@ import {
   PaymentNotFoundException,
 } from '../exceptions/payment.exceptions';
 import { redact } from '../../common/utils/redact.util';
+import { MetricsService } from '../../observability/metrics.service';
+import { RequestContextService } from '../../common/context/request-context.service';
 
 export interface InitializePaymentResult {
   reference: string;
@@ -51,6 +57,8 @@ export class PaymentService {
     @Inject(PAYMENT_REPOSITORY) private readonly paymentRepository: IPaymentRepository,
     @Inject(PAYMENT_GATEWAY) private readonly paymentGateway: IPaymentGateway,
     @Inject(EVENT_PUBLISHER) private readonly eventPublisher: IEventPublisher,
+    private readonly metrics: MetricsService,
+    private readonly requestContext: RequestContextService,
   ) {}
 
   async initializePayment(
@@ -74,7 +82,7 @@ export class PaymentService {
       throw new DuplicatePaymentException(reference);
     }
 
-    let gatewayResult;
+    let gatewayResult: InitializeTransactionResult;
     try {
       gatewayResult = await this.paymentGateway.initializeTransaction({
         amount: dto.amount,
@@ -119,7 +127,12 @@ export class PaymentService {
       occurredAt: new Date().toISOString(),
     });
 
-    this.logger.log(`Payment initialized: ${redact({ reference: payment.reference })}`);
+    this.metrics.recordPaymentInitialized();
+    this.logger.log(
+      `[${this.requestContext.getCorrelationId() ?? 'unknown'}] Payment initialized: ${JSON.stringify(
+        redact({ reference: payment.reference }),
+      )}`,
+    );
 
     return {
       reference: payment.reference,
@@ -140,7 +153,7 @@ export class PaymentService {
       throw new PaymentNotFoundException(reference);
     }
 
-    let verification;
+    let verification: VerifyTransactionResult;
     try {
       verification = await this.paymentGateway.verifyTransaction(reference);
     } catch (err) {
@@ -171,6 +184,7 @@ export class PaymentService {
           paidAt: verification.paidAt,
           occurredAt: new Date().toISOString(),
         });
+        this.metrics.recordPaymentSuccessful();
       } else if (newStatus === PaymentStatus.FAILED || newStatus === PaymentStatus.ABANDONED) {
         await this.eventPublisher.publish(PaymentEventName.PAYMENT_FAILED, {
           reference: updated.reference,
@@ -180,6 +194,7 @@ export class PaymentService {
           reason: verification.gatewayResponse,
           occurredAt: new Date().toISOString(),
         });
+        this.metrics.recordPaymentFailed();
       }
     }
 
@@ -218,14 +233,14 @@ export class PaymentService {
     }
 
     const refundReference = generateRefundReference();
-    const refund = await this.paymentRepository.createRefund({
+    await this.paymentRepository.createRefund({
       paymentId: payment.id,
       reference: refundReference,
       amount: dto.amount ?? null,
       reason: dto.reason ?? null,
     });
 
-    let gatewayResult;
+    let gatewayResult: RefundTransactionResult;
     try {
       gatewayResult = await this.paymentGateway.refundTransaction({
         reference: dto.reference,
@@ -233,13 +248,13 @@ export class PaymentService {
         reason: dto.reason,
       });
     } catch (err) {
-      await this.paymentRepository.updateRefund(refundReference, { status: 'FAILED' as any });
+      await this.paymentRepository.updateRefund(refundReference, { status: RefundStatus.FAILED });
       this.logger.error(`Paystack refund failed for reference=${dto.reference}: ${(err as Error).message}`);
       throw new PaymentGatewayException('Failed to process refund with Paystack', err);
     }
 
     await this.paymentRepository.updateRefund(refundReference, {
-      status: 'PROCESSED' as any,
+      status: RefundStatus.PROCESSED,
       paystackRefundId: gatewayResult.paystackRefundId,
     });
 
@@ -257,6 +272,7 @@ export class PaymentService {
       reason: dto.reason,
       occurredAt: new Date().toISOString(),
     });
+    this.metrics.recordPaymentRefunded();
 
     const result: RefundPaymentResult = {
       refundReference,

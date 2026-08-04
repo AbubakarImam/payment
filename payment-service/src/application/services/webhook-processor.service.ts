@@ -10,6 +10,7 @@ import {
 import { PaymentEventName } from '../../domain/enums/payment-event.enum';
 import { PaymentStatus } from '../../domain/enums/payment-status.enum';
 import { hashWebhookPayload } from '../../common/utils/crypto.util';
+import { MetricsService } from '../../observability/metrics.service';
 
 export interface PaystackWebhookPayload {
   event: string;
@@ -38,10 +39,12 @@ export class WebhookProcessorService {
   constructor(
     @Inject(PAYMENT_REPOSITORY) private readonly paymentRepository: IPaymentRepository,
     @Inject(EVENT_PUBLISHER) private readonly eventPublisher: IEventPublisher,
+    private readonly metrics: MetricsService,
   ) {}
 
   async process(rawBody: Buffer, payload: PaystackWebhookPayload): Promise<void> {
     const eventId = hashWebhookPayload(rawBody);
+    this.metrics.recordWebhookEvent(payload.event);
 
     const alreadyProcessed = await this.paymentRepository.hasProcessedWebhookEvent(eventId);
     if (alreadyProcessed) {
@@ -96,6 +99,7 @@ export class WebhookProcessorService {
       paidAt: payload.data.paid_at,
       occurredAt: new Date().toISOString(),
     });
+    this.metrics.recordPaymentSuccessful();
   }
 
   private async handleFailure(payload: PaystackWebhookPayload): Promise<void> {
@@ -119,6 +123,7 @@ export class WebhookProcessorService {
       reason: payload.data.gateway_response,
       occurredAt: new Date().toISOString(),
     });
+    this.metrics.recordPaymentFailed();
   }
 
   private async handleRefund(payload: PaystackWebhookPayload): Promise<void> {
@@ -139,5 +144,6 @@ export class WebhookProcessorService {
       currency: updated.currency,
       occurredAt: new Date().toISOString(),
     });
+    this.metrics.recordPaymentRefunded();
   }
 }

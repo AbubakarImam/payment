@@ -17,7 +17,8 @@ payment/
 │   │   ├── webhook/             # HTTP webhook controller + signature/IP guards
 │   │   ├── common/              # cross-cutting: guards, filters, interceptors, crypto/redact utils
 │   │   ├── config/              # ConfigModule setup, Joi validation, secrets-provider abstraction
-│   │   ├── health/               # liveness endpoint
+│   │   ├── observability/        # Prometheus metrics (GET /metrics) — payment counters, security counters
+│   │   ├── health/               # liveness (/health) + readiness (/health/ready) via @nestjs/terminus
 │   │   ├── proto/payment.proto   # gRPC contract
 │   │   └── main.ts               # hybrid HTTP + gRPC bootstrap
 │   ├── prisma/schema.prisma
@@ -222,13 +223,56 @@ run `InitializePayment` first with `"reference": "pay_test123"`.)
 | Secure gRPC (auth / mTLS-ready) | `GrpcAuthGuard` enforces a shared-secret bearer token on every RPC (fail-closed if unset); `main.ts` supports `GRPC_TLS_ENABLED` to serve gRPC over TLS with optional client-cert verification (mTLS) via `ServerCredentials.createSsl`. |
 | Production secrets management readiness | `config/secrets/` defines an `ISecretsProvider` abstraction with stub adapters for AWS Secrets Manager and HashiCorp Vault (`SECRETS_PROVIDER` env toggle) — swap in real SDK calls without touching any consuming code, since everything reads secrets through `ConfigService`. |
 | Never log secrets / card data / sensitive info | `common/utils/redact.util.ts` deep-redacts known-sensitive keys (`authorization`, `secret`, `token`, `cvv`, signature headers, etc.) before anything is logged; used by `LoggingInterceptor`, `PaystackService`'s request logging, and `RabbitMqPublisherService`'s publish logging. |
-| OWASP API Security Top 10 | Broken object-level auth → references are unguessable + scoped lookups by reference; excessive data exposure → gRPC/HTTP responses return only defined fields, no raw Paystack payloads; injection → all input validated/whitelisted, Prisma parameterizes queries; rate limiting → Throttler; security misconfiguration → fail-fast env validation (Joi) refuses to boot with missing secrets; logging/monitoring → structured logs with redaction on every request. |
+| Operational metrics don't leak publicly | `GET /metrics` is gated by `MetricsAccessGuard` (`observability/metrics-access.guard.ts`) — requires `METRICS_ACCESS_TOKEN` via bearer/`x-metrics-token` header, constant-time compared; fails closed (denies) if the token is unset in production. |
+| Security-relevant events are independently observable | `payment_service_webhook_signature_failures_total` and `payment_service_grpc_auth_failures_total` counters (see `PaystackSignatureGuard`, `GrpcAuthGuard`) mean a spike in rejected requests can back an alert, not just a log line someone has to be actively watching. |
+| OWASP API Security Top 10 | Broken object-level auth → references are unguessable + scoped lookups by reference; excessive data exposure → gRPC/HTTP responses return only defined fields, no raw Paystack payloads; injection → all input validated/whitelisted, Prisma parameterizes queries; rate limiting → Throttler; security misconfiguration → fail-fast env validation (Joi) refuses to boot with missing secrets; logging/monitoring → structured, correlation-ID-tagged logs and metrics on every request (see Observability below). |
 
 **Not included / requires infra-level setup**: TLS certificate provisioning
 itself (use your platform's cert manager / ACM / Let's Encrypt), a real
 AWS Secrets Manager or Vault client (stubs provided, see
 `config/secrets/`), and a WAF/DDoS layer (recommend fronting with
 Cloudflare/API Gateway in production).
+
+## Observability
+
+Three pillars, each answering a different question:
+
+| Pillar | Where | Answers |
+|---|---|---|
+| Structured, correlated logs | `common/interceptors/logging.interceptor.ts` + `common/context/request-context.service.ts` | "What happened, in order, for this one request?" |
+| Metrics | `GET /metrics` (Prometheus text format), `observability/metrics.service.ts` | "Is the system healthy right now, in aggregate?" |
+| Health checks | `GET /health` (liveness), `GET /health/ready` (readiness — DB + RabbitMQ), `health/` via `@nestjs/terminus` | "Should the orchestrator route traffic here / restart this instance?" |
+
+**Correlation IDs**: every HTTP request and gRPC call gets an `x-correlation-id`
+(reused if the caller supplies one, generated otherwise via
+`RequestContextService`, an `AsyncLocalStorage`-backed ambient context).
+It's included in every log line from `LoggingInterceptor` and in every
+RabbitMQ event envelope's `correlationId` field, so a downstream
+consumer's logs can be traced back to the request that caused the event.
+HTTP responses echo it back in the `x-correlation-id` header.
+
+**Metrics exposed** (`payment_service_` prefix): payment lifecycle counters
+(`payments_initialized_total`, `_successful_total`, `_failed_total`,
+`_refunded_total`), `webhook_events_total{event_type}`, the two
+security counters called out in the checklist above, a
+`request_duration_seconds{transport,handler,outcome}` histogram, and
+Node process defaults (event loop lag, memory, GC) via
+`prom-client`'s `collectDefaultMetrics`. Scrape with a local Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: payment-service
+    bearer_token: <METRICS_ACCESS_TOKEN>
+    static_configs:
+      - targets: ["localhost:3000"]
+```
+
+**Health endpoints**: `/health` is dependency-free by design — it only
+confirms the process is alive, so a transient database blip doesn't
+trigger a container restart loop. `/health/ready` actually round-trips a
+`SELECT 1` to Postgres and checks the RabbitMQ connection state; point a
+Kubernetes `readinessProbe` (or load balancer health check) at it, and a
+`livenessProbe` at `/health`.
 
 ## Extending
 

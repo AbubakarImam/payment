@@ -22,6 +22,7 @@ x-payment-service-env: &payment-service-env
   CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
   SECRETS_PROVIDER: ${SECRETS_PROVIDER:-env}
   LOG_LEVEL: ${LOG_LEVEL:-info}
+  METRICS_ACCESS_TOKEN: ${METRICS_ACCESS_TOKEN:-}
 
 services:
   postgres:
@@ -32,7 +33,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-payment_pass}
       POSTGRES_DB: payment_service
     ports:
-      - "5432:5432"
+      # Host-side port only — remapped to 5433 because this machine already
+      # has a native Postgres service bound to 5432. Containers still talk
+      # to each other as `postgres:5432` on the internal Docker network,
+      # unaffected by this. Use 5433 when connecting from tools on the host.
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

@@ -36,7 +36,7 @@ export const validationSchema = Joi.object({
   WEBHOOK_THROTTLE_TTL_MS: Joi.number().default(60000),
   WEBHOOK_THROTTLE_LIMIT: Joi.number().default(60),
 
-  CORS_ALLOWED_ORIGINS: Joi.string().default(''),
+  CORS_ALLOWED_ORIGINS: Joi.string().allow('').default(''),
 
   SECRETS_PROVIDER: Joi.string().valid('env', 'aws-secrets-manager', 'vault').default('env'),
   AWS_SECRETS_MANAGER_SECRET_ID: Joi.string().optional(),
@@ -45,4 +45,6 @@ export const validationSchema = Joi.object({
   VAULT_SECRET_PATH: Joi.string().optional(),
 
   LOG_LEVEL: Joi.string().valid('error', 'warn', 'info', 'debug', 'verbose').default('info'),
+
+  METRICS_ACCESS_TOKEN: Joi.string().min(16).optional(),
 });

@@ -19,6 +19,12 @@ export interface BaseEventEnvelope<T> {
   eventName: PaymentEventName;
   occurredAt: string;
   version: 1;
+  /**
+   * Correlation ID of the request/webhook delivery that caused this event,
+   * when available — lets a downstream consumer join its own logs back to
+   * the request that originated the whole chain. See RequestContextService.
+   */
+  correlationId?: string;
   data: T;
 }
 

@@ -2,6 +2,7 @@ import { CanActivate, ExecutionContext, ForbiddenException, Injectable, Logger }
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import { verifyPaystackSignature } from '../../common/utils/crypto.util';
+import { MetricsService } from '../../observability/metrics.service';
 
 /**
  * Verifies the `x-paystack-signature` header using HMAC-SHA512 against
@@ -15,7 +16,10 @@ import { verifyPaystackSignature } from '../../common/utils/crypto.util';
 export class PaystackSignatureGuard implements CanActivate {
   private readonly logger = new Logger(PaystackSignatureGuard.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly metrics: MetricsService,
+  ) {}
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<Request>();
@@ -31,6 +35,7 @@ export class PaystackSignatureGuard implements CanActivate {
 
     const isValid = verifyPaystackSignature(rawBody, signature, secretKey);
     if (!isValid) {
+      this.metrics.recordWebhookSignatureFailure();
       this.logger.warn(`Rejected webhook with invalid signature from ip=${request.ip}`);
       throw new ForbiddenException('Invalid webhook signature');
     }

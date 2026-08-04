@@ -8,6 +8,7 @@ import { IEventPublisher } from '../../domain/interfaces/event-publisher.interfa
 import { PaymentEventName } from '../../domain/enums/payment-event.enum';
 import { EVENT_ROUTING_KEYS, BaseEventEnvelope } from './events/payment-events.schema';
 import { redact } from '../../common/utils/redact.util';
+import { RequestContextService } from '../../common/context/request-context.service';
 
 /**
  * Publishes domain events to a durable topic exchange. Uses
@@ -24,7 +25,10 @@ export class RabbitMqPublisherService implements IEventPublisher, OnModuleInit, 
   private readonly exchange: string;
   private readonly exchangeType: string;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly requestContext: RequestContextService,
+  ) {
     this.exchange = this.configService.get<string>('rabbitmq.exchange')!;
     this.exchangeType = this.configService.get<string>('rabbitmq.exchangeType')!;
   }
@@ -54,16 +58,23 @@ export class RabbitMqPublisherService implements IEventPublisher, OnModuleInit, 
     await this.connection?.close();
   }
 
+  /** Used by RabbitMqHealthIndicator for the readiness probe. */
+  isConnected(): boolean {
+    return this.connection?.isConnected() ?? false;
+  }
+
   async publish<T extends Record<string, unknown>>(
     eventName: PaymentEventName,
     payload: T,
   ): Promise<void> {
     const routingKey = EVENT_ROUTING_KEYS[eventName];
+    const correlationId = this.requestContext.getCorrelationId();
     const envelope: BaseEventEnvelope<T> = {
       eventId: uuid(),
       eventName,
       occurredAt: new Date().toISOString(),
       version: 1,
+      correlationId,
       data: payload,
     };
 
@@ -72,10 +83,11 @@ export class RabbitMqPublisherService implements IEventPublisher, OnModuleInit, 
         persistent: true,
         contentType: 'application/json',
         messageId: envelope.eventId,
+        correlationId,
         timestamp: Date.now(),
       });
       this.logger.log(
-        `Published event ${eventName} [${envelope.eventId}] -> ${routingKey}: ${JSON.stringify(
+        `[${correlationId ?? 'unknown'}] Published event ${eventName} [${envelope.eventId}] -> ${routingKey}: ${JSON.stringify(
           redact(payload),
         )}`,
       );

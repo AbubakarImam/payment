@@ -54,4 +54,8 @@ export default () => ({
   secretsProvider: process.env.SECRETS_PROVIDER ?? 'env',
 
   logLevel: process.env.LOG_LEVEL ?? 'info',
+
+  metrics: {
+    accessToken: process.env.METRICS_ACCESS_TOKEN,
+  },
 });
